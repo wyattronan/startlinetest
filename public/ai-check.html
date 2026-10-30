@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Startline AI Check</title>
+<style>
+:root{--paper:#f1f3f7;--surface:#fff;--ink:#141a2b;--muted:#5b6474;--line:#dde1e8;--accent:#c8441c;--go:#1f7a4d;--go-soft:#e3f3ea;--red:#b42318;--red-soft:#fdecea;--warn-soft:#fff6db}
+@media (prefers-color-scheme:dark){:root{--paper:#0f1422;--surface:#171e30;--ink:#eef1f7;--muted:#9aa3b5;--line:#2a3349;--go:#5fd39a;--go-soft:#173a2a;--red:#ff8a80;--red-soft:#3a1d1d;--warn-soft:#3a3218}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--paper);color:var(--ink);font:16px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif}
+main{max-width:680px;margin:0 auto;padding:40px 16px 60px}
+h1{font-style:italic;text-transform:uppercase;font-weight:800;font-size:clamp(28px,6vw,40px);line-height:1;margin:0 0 8px}
+p.sub{color:var(--muted);margin:0 0 24px}
+ol{list-style:none;padding:0;margin:0;display:grid;gap:10px}
+li{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:14px 16px;display:grid;grid-template-columns:28px 1fr;gap:12px;align-items:start}
+.dot{width:24px;height:24px;border-radius:50%;display:grid;place-items:center;font-weight:800;font-size:14px;background:var(--line);color:var(--muted)}
+.ok .dot{background:var(--go-soft);color:var(--go)}
+.bad .dot{background:var(--red-soft);color:var(--red)}
+.skip{opacity:.55}
+b{display:block}
+.fix{margin-top:6px;padding:10px 12px;border-radius:8px;background:var(--warn-soft);font-size:14.5px}
+.fix ol{display:block;padding-left:18px;list-style:decimal;margin:4px 0 0}
+.fix li{display:list-item;background:none;border:0;padding:0;margin:2px 0}
+code{font-family:ui-monospace,Menlo,monospace;font-size:13.5px;background:var(--paper);padding:1px 5px;border-radius:4px}
+.muted{color:var(--muted);font-size:14px}
+button{margin-top:20px;font:inherit;font-weight:800;font-style:italic;text-transform:uppercase;letter-spacing:.02em;background:var(--accent);color:#fff;border:0;border-radius:10px;padding:10px 18px;cursor:pointer}
+a{color:var(--accent)}
+</style>
+</head>
+<body>
+<main>
+  <h1>AI connection check</h1>
+  <p class="sub">Tests each link between your Startline site and the Anthropic API, and tells you what to fix.</p>
+  <ol id="list"></ol>
+  <button id="again">Run again</button>
+  <p class="muted" style="margin-top:16px"><a href="/">← Back to Startline</a></p>
+</main>
+<script>
+const steps = [
+  ['shim', 'The page’s AI connector loaded'],
+  ['fn', 'The AI function is deployed on Netlify'],
+  ['key', 'Your Anthropic API key is set'],
+  ['live', 'Anthropic accepted a test request'],
+  ['stream', 'A real coaching request streams back to the page']
+];
+const FIX = {
+  shim: 'The file <code>claude-shim.js</code> is missing. Make sure the whole <code>public</code> folder was deployed, not just <code>index.html</code>.',
+  not_deployed: `Netlify isn’t running the AI function. This almost always means the site was deployed by drag-and-drop, which publishes only static files.<ol>
+    <li>Put the full project (the <code>public</code> and <code>netlify</code> folders plus <code>netlify.toml</code>) at the top level of a GitHub repo.</li>
+    <li>In Netlify: <b style="display:inline">Add new site → Import an existing project → GitHub</b>, pick the repo, and leave the build command empty.</li>
+    <li>After it deploys, open <b style="display:inline">Logs &amp; metrics → Edge Functions</b>. You should see <code>ai</code> listed. Then run this check again.</li></ol>`,
+  no_key: `Add the key and redeploy:<ol><li>Netlify → <b style="display:inline">Site configuration → Environment variables → Add a variable</b>.</li><li>Key: <code>ANTHROPIC_API_KEY</code>. Value: your key from console.anthropic.com (starts with <code>sk-ant-</code>). Give it access to <b style="display:inline">Functions</b> (or all scopes).</li><li><b style="display:inline">Deploys → Trigger deploy → Deploy site</b>. New variables only apply after a fresh deploy.</li></ol>`,
+  bad_key: 'Anthropic rejected the key. Create a new key at console.anthropic.com → API keys, paste it into <code>ANTHROPIC_API_KEY</code> with no spaces or quotes, then trigger a new deploy.',
+  no_credit: 'The key works, but the Anthropic account has no credits. Go to console.anthropic.com → <b style="display:inline">Plans &amp; Billing</b>, add credits, and set a monthly limit. No redeploy needed.',
+  bad_model: 'Your account can’t use the model the site asks for. In Netlify, add an environment variable <code>MODEL</code> (and <code>MODEL_QUICK</code> if it says “Quick model”) set to a model listed at console.anthropic.com → Workbench, then redeploy.',
+  forbidden: 'Add your site’s address to an environment variable <code>ALLOWED_ORIGINS</code> (for example <code>https://startline.us</code>), then redeploy.',
+  rate_limited: 'Your Anthropic account hit its rate limit. Wait a minute and run again, or raise limits at console.anthropic.com.',
+  overloaded: 'Anthropic is briefly overloaded. Wait a minute and run again.',
+  upstream_unreachable: 'The function couldn’t reach api.anthropic.com. This is usually brief; run again in a minute.'
+};
+const list = document.getElementById('list');
+function draw(state){
+  list.innerHTML = steps.map(([id, label]) => {
+    const s = state[id] || {};
+    const cls = s.ok === true ? 'ok' : s.ok === false ? 'bad' : 'skip';
+    const mark = s.ok === true ? '✓' : s.ok === false ? '!' : '·';
+    return `<li class="${cls}"><span class="dot">${mark}</span><div><b>${label}</b>${s.note ? `<div class="muted">${s.note}</div>` : ''}${s.fix ? `<div class="fix">${s.fix}</div>` : ''}</div></li>`;
+  }).join('');
+}
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+async function run(){
+  const st = {}; draw(st);
+  // 1. connector script
+  const shimOk = await fetch('/claude-shim.js', { cache:'no-store' }).then(r => r.ok && /javascript/.test(r.headers.get('content-type') || 'javascript')).catch(() => false);
+  st.shim = shimOk ? { ok:true } : { ok:false, fix:FIX.shim }; draw(st);
+  // 2-4. function, key, live test
+  let r, j = null;
+  try { r = await fetch('/api/ai?check=1', { cache:'no-store' }); j = await r.json().catch(() => null); } catch (e) {}
+  if (!r || !j || typeof j.function !== 'boolean') {
+    st.fn = { ok:false, note: r ? `The address /api/ai returned ${r.status}${j ? '' : ' (not the AI function)'}.` : 'No response from /api/ai.', fix:FIX.not_deployed };
+    return draw(st);
+  }
+  st.fn = { ok:true, note:`Models: ${esc(j.model)} (main), ${esc(j.quickModel)} (quick)` };
+  st.key = j.keySet ? { ok:true } : { ok:false, fix:FIX.no_key };
+  if (!j.keySet) return draw(st);
+  st.live = j.ok ? { ok:true } : { ok:false, note:esc(j.detail || ''), fix:FIX[j.code] || '' };
+  draw(st);
+  if (!j.ok) return;
+  // 5. the same path the site uses
+  try {
+    const f = window.claude && await window.claude.use('sample');
+    if (!f) throw { detail:'The connector didn’t load.' };
+    const { text } = await f('Reply with exactly: Startline coach is connected.');
+    st.stream = { ok:true, note:'Reply: “' + esc(text.trim().slice(0, 80)) + '”' };
+  } catch (e) {
+    st.stream = { ok:false, note:esc((e && (e.detail || e.code)) || 'Unknown error'), fix:FIX[e && e.code] || 'Run the check again. If this step keeps failing while the others pass, send Claude this message.' };
+  }
+  draw(st);
+}
+document.getElementById('again').onclick = run;
+</script>
+<script src="/claude-shim.js"></script>
+<script>run();</script>
+</body>
+</html>
